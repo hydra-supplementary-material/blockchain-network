@@ -64,7 +64,7 @@ import           Data.Typeable (Typeable)
 import           GHC.Stack (HasCallStack)
 import           System.FilePath ((</>))
 
-import           Cardano.Prelude (allNoUnexpectedThunks)
+import           Cardano.Prelude (allNoUnexpectedThunks, bimap, Word64)
 
 import           Ouroboros.Network.Block (pattern BlockPoint, ChainHash (..),
                      pattern GenesisPoint, HasHeader (..), HeaderHash,
@@ -497,7 +497,7 @@ blockFileParser' :: forall m blk h. (IOLike m, HasHeader blk)
                      m
                      (HeaderHash blk)
 blockFileParser' hasFS isEBB encodeBlock decodeBlock = VolDB.Parser $
-       fmap (fmap (fmap fst)) -- Drop the offset of the error
+       fmap (bimap toParsedInfo (fmap fst)) -- Drop the offset of the error
      . Util.CBOR.readIncrementalOffsets hasFS decoder'
   where
     -- TODO: It looks weird that we use an encoding function 'encodeBlock'
@@ -508,6 +508,10 @@ blockFileParser' hasFS isEBB encodeBlock decodeBlock = VolDB.Parser $
              -> VolDB.BlockInfo (HeaderHash blk))
     decoder' = ((\blk -> extractInfo isEBB (encodeBlock blk) blk) .)
       <$> decodeBlock
+
+    toParsedInfo :: [(Word64, (Word64, VolDB.BlockInfo blockId))]
+                 -> VolDB.ParsedInfo blockId
+    toParsedInfo = fmap $ \(o, (s, a)) -> (o, (VolDB.BlockSize s, a))
 
 {-------------------------------------------------------------------------------
   Error handling

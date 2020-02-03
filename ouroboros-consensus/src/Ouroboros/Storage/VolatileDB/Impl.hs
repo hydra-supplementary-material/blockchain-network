@@ -633,7 +633,7 @@ mkInternalState hasFS err parser n files =
         nextNewFileId' = fdToWrite + 1
 
     go currentMap currentRevMap succMap maxSlot lessThanN ((fd, file):rest) = do
-        (blocks, mErr) <- getParsedInfo parser file
+        (blocks, mErr) <- parse parser file
         updateAndGo blocks mErr
       where
         -- | Updates the state and call 'go' for the rest of the files.

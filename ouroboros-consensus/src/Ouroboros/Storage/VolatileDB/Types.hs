@@ -18,7 +18,7 @@ import           Data.Typeable
 import           Data.Word (Word16, Word64)
 import           GHC.Generics (Generic)
 
-import           Cardano.Prelude (NoUnexpectedThunks, first)
+import           Cardano.Prelude (NoUnexpectedThunks)
 
 import           Ouroboros.Network.Block hiding (Tip, decodeTip, encodeTip)
 import           Ouroboros.Network.Point (WithOrigin)
@@ -108,25 +108,13 @@ newtype BlockSize = BlockSize {unBlockSize :: Word64}
 
 newtype Parser e m blockId = Parser {
     -- | Parse block storage at the given path.
-    parse :: FsPath -> m ([(Word64, (Word64, BlockInfo blockId))], Maybe e)
+    parse :: FsPath -> m (ParsedInfo blockId, Maybe e)
     }
-
--- | Simply wraps around the types of the parser.
-getParsedInfo :: Functor m
-              => Parser e m blockId
-              -> FsPath
-              -> m (ParsedInfo blockId, Maybe e)
-getParsedInfo (Parser parser) path =
-    first toParsedInfo <$> parser path
-  where
-    toParsedInfo :: [(Word64, (Word64, BlockInfo blockId))]
-                 -> ParsedInfo blockId
-    toParsedInfo = fmap $ \(o, (s, a)) -> (o, (BlockSize s, a))
 
 -- | The offset of a slot in a file.
 type SlotOffset = Word64
 
--- | Information returned by the parser about a single file
+-- | Information returned by the parser about a single file.
 --
 -- The parser returns for each block, its size its blockId, its slot and its
 -- predecessor's blockId.
