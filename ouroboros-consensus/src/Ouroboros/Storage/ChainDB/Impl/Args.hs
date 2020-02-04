@@ -186,6 +186,7 @@ fromChainDbArgs ChainDbArgs{..} = (
           volHasFS            = cdbHasFSVolDb
         , volErr              = cdbErrVolDb
         , volErrSTM           = cdbErrVolDbSTM
+        , volCheckIntegrity   = cdbCheckIntegrity
         , volBlocksPerFile    = cdbBlocksPerFile
         , volDecodeHeader     = cdbDecodeHeader
         , volDecodeBlock      = cdbDecodeBlock
