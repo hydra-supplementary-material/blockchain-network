@@ -328,8 +328,7 @@ getMaxSlotNoModel err = do
   Corruptions
 ------------------------------------------------------------------------------}
 
-runCorruptionModel :: forall blockId m. MonadState (DBModel blockId) m
-                   => Ord blockId
+runCorruptionModel :: MonadState (DBModel BlockId) m
                    => Corruptions
                    -> m ()
 runCorruptionModel corrs = do
@@ -338,8 +337,8 @@ runCorruptionModel corrs = do
     put dbm'
   where
     corruptDBModel :: (FileCorruption, FsPath)
-                   -> DBModel blockId
-                   -> DBModel blockId
+                   -> DBModel BlockId
+                   -> DBModel BlockId
     corruptDBModel (corr, file) dbm@DBModel{..} = case corr of
         DeleteFile -> dbm {
               mp = Map.withoutKeys mp (Set.fromList $ fst <$> bids)
@@ -375,6 +374,9 @@ runCorruptionModel corrs = do
             -- throw the error.
             parseError' = if n > 0 && isNothing parseError
                           then Nothing else parseError
+        PutCorrupted _tb ->
+          -- Putting a corrupted block is a no-op since they will be truncated.
+          dbm
 
 createFileModel :: forall blockId m. MonadState (DBModel blockId) m
                 => m ()

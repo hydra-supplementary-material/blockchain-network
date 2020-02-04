@@ -373,8 +373,9 @@ preconditionImpl Model{..} (At (CmdErr cmd err)) =
         Boolean $ (slotAfterGC $ Just $ thSlotNo $ testHeader tb)
                && (not $ M.member (thHash $ testHeader tb) (mp dbModel))
       AskIfMember bids       -> Boolean $ and (afterGC <$> bids)
-      Corrupt cors           -> isOpen .&&
-        forall (corruptionFiles cors) (`elem` getDBFiles dbModel)
+      Corrupt cors           -> isOpen
+        .&& forall (corruptionFiles cors) (`elem` getDBFiles dbModel)
+        .&& forall (corruptions cors) corruptionPrecondition
       CreateFile             -> isOpen
       CreateInvalidFile      -> isOpen
       DuplicateBlock file tb ->
@@ -411,6 +412,13 @@ preconditionImpl Model{..} (At (CmdErr cmd err)) =
       (False, True) -> Bot
       _             -> Top
 
+    corruptionPrecondition :: FileCorruption -> Logic
+    corruptionPrecondition (PutCorrupted tb) =
+            Boolean (not $ checkBlockIntegrity tb)
+        .&& Boolean (M.notMember (thHash $ testHeader tb) (mp dbModel))
+        .&& Boolean (slotAfterGC $ Just $ thSlotNo $ testHeader tb)
+    corruptionPrecondition _                 = Top
+
 postconditionImpl :: Model Concrete
                   -> At CmdErr Concrete
                   -> At Resp Concrete
@@ -424,17 +432,9 @@ generatorCmdImpl :: Bool -> Model Symbolic -> Maybe (Gen (At Cmd Symbolic))
 generatorCmdImpl terminatingCmd m@Model {..} =
     if shouldEnd then Nothing else Just $ do
     blockId <- blockIdGenerator m
-    pblockId <- predecessorGenerator
     blockIds <- listOf $ blockIdGenerator m
     slot <- arbitrary -- TODO: We may want to have more collisions.
-    isEBB <- elements [IsNotEBB, IsEBB]
-    -- Many fields of the TestBlock are never used, so we use fixed values.
-    let testBody = TestBody 0 True
-        hashBody' = hashBody testBody
-        testHeaderHash = BlockHash pblockId
-        testHeader =
-          TestHeader blockId testHeaderHash hashBody' slot (BlockNo 0) isEBB
-        testBlock = TestBlock testHeader testBody
+    testBlock <- genBlock
     duplicate <- mkDuplicate testBlock
     let allowDuplication = terminatingCmd && isJust duplicate
     At <$> frequency [
@@ -454,19 +454,39 @@ generatorCmdImpl terminatingCmd m@Model {..} =
       -- interesting tests.
       , (if open dbModel then 10 else 1000, return $ ReOpen)
       , (if null blockIds then 0 else 30, return $ AskIfMember blockIds)
-      , (if null dbFiles then 0 else 30, Corrupt <$> generateCorruptions dbFiles)
+      , (if null dbFiles then 0 else 100,
+          Corrupt <$> generateCorruptions testBlock dbFiles)
       , (if terminatingCmd then 1 else 0, return CreateInvalidFile)
       , (if allowDuplication then 1 else 0, return $ fromJust duplicate)
       ]
   where
     dbFiles = getDBFiles dbModel
-    mkDuplicate tb@TestBlock{..} =
+    mkDuplicate TestBlock{..} =
       case getDBBlocksWithFiles dbModel of
         []   -> return Nothing
         bids -> do
           (f, b) <- elements bids
-          let testHead' = testHeader{thHash = b}
-          return $ Just $ DuplicateBlock f (tb {testHeader = testHead'})
+          let testHeader' = testHeader {thHash = b}
+          -- This is an invalid block in the sense that the thHash is not the
+          -- real hash of the block. The validation check in not performed for
+          -- these blocks, in order to test what happens with duplicated blocks.
+          let testBlock' = testBody {tbIsValid = False }
+          return $ Just $ DuplicateBlock f (TestBlock testHeader' testBlock')
+
+-- Many fields of the TestBlock are never used, so we use fixed values.
+genBlock :: Gen TestBlock
+genBlock = do
+  pblockId <- predecessorGenerator
+  isEBB <- elements [IsNotEBB, IsEBB]
+  slot <- arbitrary
+  let testBody = TestBody 0 True
+      hashBody' = hashBody testBody
+      testPHeaderHash = BlockHash pblockId
+      testHeader' =
+        TestHeader undefined testPHeaderHash hashBody' slot (BlockNo 0) isEBB
+      testHeader = testHeader' {thHash = hashHeader testHeader'}
+      testBlock = TestBlock testHeader testBody
+  return testBlock
 
 generatorImpl :: Bool
               -> Bool
@@ -586,6 +606,7 @@ runDB db cmd env@Internal.VolatileDBEnv{..} = case cmd of
           hPut hasFS (Internal._currentWriteHandle st)
                           (testBlockToBuilder tb)
         withClosedDB $ return ()
+
   where
     withClosedDB action = do
       closeDB db
@@ -609,6 +630,12 @@ mockImpl model cmdErr = At <$> return mockResp
   where
     (mockResp, _dbModel') = step model cmdErr
 
+-- | Some blocks are intentionally invalid, for example to test duplicate blocks
+-- and their 'tbIsValid' is @False@. We don't care about checking these blocks.
+checkBlockIntegrity :: TestBlock -> Bool
+checkBlockIntegrity testBlock =
+    testBlockIsValid testBlock || not (tbIsValid (testBody testBlock))
+
 prop_sequential :: Property
 prop_sequential =
     forAllCommands smUnused Nothing $ \cmds -> monadicIO $ do
@@ -618,7 +645,7 @@ prop_sequential =
             test errorsVar hasFS = do
               let ec = EH.throwCantCatch EH.monadCatch
               let parser = blockFileParser' hasFS testBlockIsEBB
-                    testBlockToBinaryInfo (const <$> decode) (const True)
+                    testBlockToBinaryInfo (const <$> decode) checkBlockIntegrity
                     ValidateAll
               (db, env) <- run $
                     Internal.openDBFull hasFS EH.monadCatch ec parser 3

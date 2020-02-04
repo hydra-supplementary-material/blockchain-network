@@ -13,6 +13,7 @@ module Test.Ouroboros.Storage.VolatileDB.TestBlock
   , FileCorruption (..)
   , Corruptions
   , corruptionFiles
+  , corruptions
   , generateCorruptions
   , corruptFile
   , createFile
@@ -70,14 +71,20 @@ data FileCorruption
     = DeleteFile
     | DropLastBytes Word64
     | AppendBytes Int
+    | PutCorrupted TestBlock
     deriving (Show, Eq)
 
-instance Arbitrary FileCorruption where
-    arbitrary = frequency
-      [ (1, return DeleteFile)
-      , (1, DropLastBytes <$> choose (1,5)) -- should be less than size of block
-      , (1, AppendBytes . getSmall . getPositive <$> arbitrary)
-      ]
+genFileCorruption :: TestBlock -> Gen FileCorruption
+genFileCorruption tb@TestBlock{..} = frequency
+    [ (1, return DeleteFile)
+    , (1, DropLastBytes <$> choose (1,5)) -- should be less than size of block
+    , (1, AppendBytes . getSmall . getPositive <$> arbitrary)
+    , (2, mkCorruptedBlock)
+    ]
+  where
+      mkCorruptedBlock = do
+        blockId <- TestHeaderHash <$> arbitrary
+        return $ PutCorrupted tb { testHeader = testHeader {thHash = blockId} }
 
 -- | Multiple corruptions.
 type Corruptions = NonEmpty (FileCorruption, FsPath)
@@ -86,13 +93,16 @@ type Corruptions = NonEmpty (FileCorruption, FsPath)
 corruptionFiles :: Corruptions -> [FsPath]
 corruptionFiles = map snd . NE.toList
 
+corruptions :: Corruptions -> [FileCorruption]
+corruptions = map fst . NE.toList
+
 -- | The same file will not occur twice.
-generateCorruptions :: [FsPath] -> Gen Corruptions
-generateCorruptions allFiles = sized $ \n -> do
+generateCorruptions :: TestBlock -> [FsPath] -> Gen Corruptions
+generateCorruptions tb allFiles = sized $ \n -> do
     subl  <- sublistOf allFiles `suchThat` (not . null)
     k     <- choose (1, 1 `max` n)
     let files = NE.fromList $ take k subl
-    forM files $ \file -> (, file) <$> arbitrary
+    forM files $ \file -> (, file) <$> (genFileCorruption tb)
 
 corruptFile :: MonadThrow m => HasFS m h -> FileCorruption -> FsPath -> m Bool
 corruptFile hasFS@HasFS{..} corr file = case corr of
@@ -109,6 +119,10 @@ corruptFile hasFS@HasFS{..} corr file = case corr of
         let newFileSize = fileSize + (fromIntegral n)
         _ <- hPut hasFS hnd (BB.byteString $ BS.replicate n 0)
         return $ fileSize /= newFileSize
+    PutCorrupted tb ->
+      withFile hasFS file (AppendMode AllowExisting) $ \hnd -> do
+        _ <- hPut hasFS hnd (testBlockToBuilder tb)
+        return True
 
 createFile :: IOLike m
            => Internal.VolatileDBEnv m blockId
