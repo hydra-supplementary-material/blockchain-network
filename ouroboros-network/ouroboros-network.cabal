@@ -27,8 +27,8 @@ Flag ipv6
   -- Default to False since travis lacks IPv6 support
   Default: False
 
-flag cddl
-  Description: Enable CDDL based tests of the CBOR encoding
+flag nocddl
+  Description: Disable CDDL based tests of the CBOR encoding
   Manual: True
   -- These tests need the cddl and the cbor-diag Ruby-package
   Default: False
@@ -288,7 +288,7 @@ test-suite test-cddl
   type:                exitcode-stdio-1.0
   hs-source-dirs:      test-cddl
   main-is:             Main.hs
-  if !flag(cddl)
+  if flag(nocddl)
     buildable: False
   default-language:    Haskell2010
   build-depends:       base,
