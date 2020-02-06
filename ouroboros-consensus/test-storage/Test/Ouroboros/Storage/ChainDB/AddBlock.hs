@@ -47,6 +47,7 @@ import qualified Ouroboros.Storage.ImmutableDB.Impl.Index as Index
 import           Ouroboros.Storage.LedgerDB.DiskPolicy (defaultDiskPolicy)
 import           Ouroboros.Storage.LedgerDB.InMemory (ledgerDbDefaultParams)
 import qualified Ouroboros.Storage.Util.ErrorHandling as EH
+import           Ouroboros.Storage.VolatileDB (BlockValidationPolicy (..))
 
 import           Test.Util.FS.Sim.MockFS (MockFS)
 import qualified Test.Util.FS.Sim.MockFS as Mock
@@ -266,6 +267,7 @@ mkArgs cfg initLedger tracer registry hashInfo
 
       -- Policy
     , cdbValidation       = ValidateAllEpochs
+    , cdbBlockValidation  = ValidateAll
     , cdbBlocksPerFile    = 4
     , cdbParamsLgrDB      = ledgerDbDefaultParams (protocolSecurityParam cfg)
     , cdbDiskPolicy       = defaultDiskPolicy (protocolSecurityParam cfg)

@@ -11,6 +11,8 @@
 
 module Test.Ouroboros.Storage.VolatileDB (tests) where
 
+import           Control.Tracer (nullTracer)
+
 import           Test.QuickCheck
 import           Test.QuickCheck.Monadic
 import           Test.Tasty (TestTree, testGroup)
@@ -32,7 +34,7 @@ tests = testGroup "VolatileDB"
 prop_VolatileInvalidArg :: HasCallStack => Property
 prop_VolatileInvalidArg = monadicIO $
     run $ apiEquivalenceVolDB fExpected (\hasFS err -> do
-            _ <- Internal.openDBFull hasFS err (EH.throwCantCatch EH.monadCatch) dummyParser 0
+            _ <- Internal.openDBFull hasFS err (EH.throwCantCatch EH.monadCatch) dummyParser nullTracer 0
             return ()
         )
   where

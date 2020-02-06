@@ -5,6 +5,7 @@
 {-# LANGUAGE GADTs                     #-}
 {-# LANGUAGE LambdaCase                #-}
 {-# LANGUAGE MultiWayIf                #-}
+{-# LANGUAGE NamedFieldPuns            #-}
 {-# LANGUAGE OverloadedStrings         #-}
 {-# LANGUAGE QuantifiedConstraints     #-}
 {-# LANGUAGE RankNTypes                #-}
@@ -96,6 +97,7 @@ module Ouroboros.Storage.VolatileDB.Impl
     ) where
 
 import           Control.Monad
+import           Control.Tracer (Tracer, traceWith)
 import qualified Data.ByteString.Builder as BS
 import           Data.List (find, sortOn)
 import           Data.Map.Strict (Map)
@@ -137,6 +139,7 @@ data VolatileDBEnv m blockId = forall h e. VolatileDBEnv {
     , _dbInternalState  :: !(StrictMVar m (OpenOrClosed blockId h))
     , _maxBlocksPerFile :: !Int
     , _parser           :: !(Parser e m blockId)
+    , _tracer           :: !(Tracer m (TraceEvent e blockId))
     }
 
 data OpenOrClosed blockId h =
@@ -185,9 +188,10 @@ openDB :: ( HasCallStack
        -> ErrorHandling VolatileDBError m
        -> ThrowCantCatch VolatileDBError (STM m)
        -> Parser e m blockId
+       -> Tracer m (TraceEvent e blockId)
        -> Int
        -> m (VolatileDB blockId m)
-openDB h e e' p m = fst <$> openDBFull h e e' p m
+openDB h e e' p t m = fst <$> openDBFull h e e' p t m
 
 openDBFull :: ( HasCallStack
               , IOLike m
@@ -200,10 +204,11 @@ openDBFull :: ( HasCallStack
            -> ErrorHandling VolatileDBError m
            -> ThrowCantCatch VolatileDBError (STM m)
            -> Parser e m blockId
+           -> Tracer m (TraceEvent e blockId)
            -> Int
            -> m (VolatileDB blockId m, VolatileDBEnv m blockId)
-openDBFull hasFS err errSTM parser maxBlocksPerFile = do
-    env <- openDBImpl hasFS err errSTM parser maxBlocksPerFile
+openDBFull hasFS err errSTM parser tracer maxBlocksPerFile = do
+    env <- openDBImpl hasFS err errSTM parser tracer maxBlocksPerFile
     return $ (, env) VolatileDB {
         closeDB           = closeDBImpl  env
       , isOpenDB          = isOpenDBImpl env
@@ -229,16 +234,18 @@ openDBImpl :: ( HasCallStack
            -> ErrorHandling VolatileDBError m
            -> ThrowCantCatch VolatileDBError (STM m)
            -> Parser e m blockId
+           -> Tracer m (TraceEvent e blockId)
            -> Int -- ^ @maxBlocksPerFile@
            -> m (VolatileDBEnv m blockId)
-openDBImpl hasFS@HasFS{..} err errSTM parser maxBlocksPerFile =
+openDBImpl hasFS@HasFS{..} err errSTM parser tracer maxBlocksPerFile =
     if maxBlocksPerFile <= 0
     then EH.throwError err $ UserError . InvalidArgumentsError $
       "maxBlocksPerFile should be positive"
     else do
-      st <- mkInternalStateDB hasFS err parser maxBlocksPerFile
+      st <- mkInternalStateDB hasFS err parser tracer maxBlocksPerFile
       stVar <- newMVar $ VolatileDbOpen st
-      return $ VolatileDBEnv hasFS err errSTM stVar maxBlocksPerFile parser
+      return $
+        VolatileDBEnv hasFS err errSTM stVar maxBlocksPerFile parser tracer
 
 closeDBImpl :: IOLike m
             => VolatileDBEnv m blockId
@@ -246,7 +253,7 @@ closeDBImpl :: IOLike m
 closeDBImpl VolatileDBEnv{..} = do
     mbInternalState <- swapMVar _dbInternalState VolatileDbClosed
     case mbInternalState of
-      VolatileDbClosed -> return ()
+      VolatileDbClosed -> traceWith _tracer DBAlreadyClosed
       VolatileDbOpen InternalState{..} ->
         wrapFsError hasFsErr _dbErr $ hClose _currentWriteHandle
   where
@@ -271,9 +278,12 @@ reOpenDBImpl :: ( HasCallStack
              -> m ()
 reOpenDBImpl VolatileDBEnv{..} =
     modifyMVar _dbInternalState $ \case
-      VolatileDbOpen st -> return (VolatileDbOpen st, ())
+      VolatileDbOpen st -> do
+        traceWith _tracer DBAlreadyOpen
+        return (VolatileDbOpen st, ())
       VolatileDbClosed -> do
-        st <- mkInternalStateDB _dbHasFS _dbErr _parser _maxBlocksPerFile
+        st <- mkInternalStateDB
+          _dbHasFS _dbErr _parser _tracer _maxBlocksPerFile
         return (VolatileDbOpen st, ())
 
 getBlockComponentImpl
@@ -339,7 +349,9 @@ putBlockImpl :: forall m blockId. (IOLike m, Ord blockId)
 putBlockImpl env@VolatileDBEnv{..} BlockInfo{..} builder =
     modifyState env $ \hasFS@HasFS{..} st@InternalState{..} ->
       if Map.member bbid _currentRevMap
-      then return (st, ()) -- putting an existing block is a no-op.
+      then do
+        traceWith _tracer $ BlockAlreadyHere bbid
+        return (st, ()) -- putting an existing block is a no-op.
       else do
         bytesWritten <- hPut hasFS _currentWriteHandle builder
         updateStateAfterWrite hasFS st bytesWritten
@@ -416,10 +428,10 @@ tryCollectFile :: forall m h blockId
                -> InternalState blockId h
                -> (FileId, FileInfo blockId)
                -> m (InternalState blockId h)
-tryCollectFile hasFS@HasFS{..} env slot st@InternalState{..} (fileId, fileInfo) =
+tryCollectFile hasFS env@VolatileDBEnv{..} slot st (fileId, fileInfo) =
     if  | not canGC     -> return st
         | not isCurrent -> do
-            removeFile $ filePath fileId
+            removeFile hasFS $ filePath fileId
             return st {
                 _currentMap     = Index.delete fileId _currentMap
               , _currentRevMap  = currentRevMap'
@@ -435,20 +447,22 @@ tryCollectFile hasFS@HasFS{..} env slot st@InternalState{..} (fileId, fileInfo) 
             -- 'reOpenFile' technically truncates the file to 0 offset, so any
             -- concurrent readers may fail. This may become an issue after:
             -- <https://github.com/input-output-hk/ouroboros-network/issues/767>
-            st' <- reOpenFile hasFS (_dbErr env) env st
+            traceWith _tracer $ TruncateCurrentFile _currentWritePath
+            st' <- reOpenFile hasFS _dbErr env st
             return st' {
                 _currentRevMap  = currentRevMap'
               , _currentSuccMap = succMap'
               }
   where
-    canGC          = FileInfo.canGC fileInfo slot
-    isCurrent      = fileId == _currentWriteId
-    isCurrentNew   = _currentWriteOffset == 0
-    bids           = FileInfo.blockIds fileInfo
-    currentRevMap' = Map.withoutKeys _currentRevMap (Set.fromList bids)
-    deletedPairs   =
+    InternalState{..} = st
+    canGC             = FileInfo.canGC fileInfo slot
+    isCurrent         = fileId == _currentWriteId
+    isCurrentNew      = _currentWriteOffset == 0
+    bids              = FileInfo.blockIds fileInfo
+    currentRevMap'    = Map.withoutKeys _currentRevMap (Set.fromList bids)
+    deletedPairs      =
         mapMaybe (\b -> (b,) . ibPreBid <$> Map.lookup b _currentRevMap) bids
-    succMap'       = foldl deleteMapSet _currentSuccMap deletedPairs
+    succMap'          = foldl deleteMapSet _currentSuccMap deletedPairs
 
 getIsMemberImpl :: forall m blockId. (IOLike m, Ord blockId)
                 => VolatileDBEnv m blockId
@@ -535,14 +549,15 @@ mkInternalStateDB :: ( HasCallStack
                   => HasFS m h
                   -> ErrorHandling VolatileDBError m
                   -> Parser e m blockId
+                  -> Tracer m (TraceEvent e blockId)
                   -> Int
                   -> m (InternalState blockId h)
-mkInternalStateDB hasFS@HasFS{..} err parser maxBlocksPerFile =
+mkInternalStateDB hasFS@HasFS{..} err parser tracer maxBlocksPerFile =
     wrapFsError hasFsErr err $ do
       createDirectoryIfMissing True dbDir
       allFiles <- map toFsPath . Set.toList <$> listDirectory dbDir
       filesWithIds <- fromEither err $ parseAllFds allFiles
-      mkInternalState hasFS err parser maxBlocksPerFile filesWithIds
+      mkInternalState hasFS err parser tracer maxBlocksPerFile filesWithIds
   where
     dbDir = mkFsPath []
 
@@ -563,10 +578,11 @@ mkInternalState
   => HasFS m h
   -> ErrorHandling VolatileDBError m
   -> Parser e m blockId
+  -> Tracer m (TraceEvent e blockId)
   -> Int
   -> [(FileId, FsPath)]
   -> m (InternalState blockId h)
-mkInternalState hasFS err parser n files =
+mkInternalState hasFS err parser tracer n files =
     wrapFsError (hasFsErr hasFS) err $
       go Index.empty Map.empty Map.empty Nothing [] files
   where
@@ -579,7 +595,8 @@ mkInternalState hasFS err parser n files =
       , FileSize 0 )
 
     truncateOnError Nothing _ _ = return ()
-    truncateOnError (Just _) file offset =
+    truncateOnError (Just e) file offset = do
+      traceWith tracer $ Truncate e file offset
       -- The handle of the parser is closed at this point. We need
       -- to reopen the file in 'AppendMode' now (parser opens with
       -- 'ReadMode').

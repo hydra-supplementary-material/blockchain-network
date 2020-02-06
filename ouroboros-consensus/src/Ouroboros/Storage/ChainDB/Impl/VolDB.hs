@@ -44,6 +44,8 @@ module Ouroboros.Storage.ChainDB.Impl.VolDB (
   , closeDB
   , reopen
   , garbageCollect
+    -- * Tracing
+  , TraceEvent
     -- * Re-exports
   , VolatileDBError
   , VolDB.BlockValidationPolicy
@@ -57,6 +59,7 @@ import           Codec.CBOR.Encoding (Encoding)
 import qualified Codec.CBOR.Read as CBOR
 import qualified Codec.CBOR.Write as CBOR
 import           Control.Monad (join)
+import           Control.Tracer (Tracer, nullTracer)
 import qualified Data.ByteString.Lazy as Lazy
 import           Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NE
@@ -129,6 +132,10 @@ instance NoUnexpectedThunks (VolDB m blk) where
     , noUnexpectedThunks ctxt errSTM
     ]
 
+-- | Short-hand for events traced by the VolDB wrapper.
+type TraceEvent blk =
+  VolDB.TraceEvent (BlockFileParserError (HeaderHash blk)) (HeaderHash blk)
+
 {-------------------------------------------------------------------------------
   Initialization
 -------------------------------------------------------------------------------}
@@ -145,6 +152,7 @@ data VolDbArgs m blk = forall h. VolDbArgs {
     , volIsEBB          :: blk -> IsEBB
     , volAddHdrEnv      :: IsEBB -> Lazy.ByteString -> Lazy.ByteString
     , volValidation     :: VolDB.BlockValidationPolicy
+    , volTracer         :: Tracer m (TraceEvent blk)
     }
 
 -- | Default arguments when using the 'IO' monad
@@ -162,6 +170,7 @@ defaultArgs fp = VolDbArgs {
       volErr            = EH.exceptions
     , volErrSTM         = EH.throwSTM
     , volHasFS          = ioHasFS $ MountPoint (fp </> "volatile")
+    , volTracer         = nullTracer
       -- Fields without a default
     , volCheckIntegrity = error "no default for volCheckIntegrity"
     , volBlocksPerFile  = error "no default for volBlocksPerFile"
@@ -181,6 +190,7 @@ openDB args@VolDbArgs{..} = do
                volErr
                volErrSTM
                (blockFileParser args)
+               volTracer
                volBlocksPerFile
     return VolDB
       { volDB     = volDB
@@ -483,17 +493,18 @@ getBlockComponent db blockComponent hash = withDB db $ \vol ->
     blockComponent' = translateToRawDB (parse db) (addHdrEnv db) blockComponent
 
 {-------------------------------------------------------------------------------
-  Auxiliary: parsing
+  Parsing
 -------------------------------------------------------------------------------}
 
-data BlockFileParserError =
+data BlockFileParserError hash =
     BlockReadErr Util.CBOR.ReadIncrementalErr
-  | BlockCorruptErr
+  | BlockCorruptedErr hash
+  deriving (Eq, Show)
 
 blockFileParser :: forall m blk. (IOLike m, HasHeader blk)
                 => VolDbArgs m blk
                 -> VolDB.Parser
-                     BlockFileParserError
+                     (BlockFileParserError (HeaderHash blk))
                      m
                      (HeaderHash blk)
 blockFileParser VolDbArgs{..} =
@@ -510,7 +521,7 @@ blockFileParser' :: forall m blk h. (IOLike m, HasHeader blk)
                  -> (blk -> Bool)
                  -> VolDB.BlockValidationPolicy
                  -> VolDB.Parser
-                     BlockFileParserError
+                     (BlockFileParserError (HeaderHash blk))
                      m
                      (HeaderHash blk)
 blockFileParser' hasFS isEBB encodeBlock decodeBlock validate validPolicy =
@@ -532,14 +543,16 @@ blockFileParser' hasFS isEBB encodeBlock decodeBlock validate validPolicy =
                     m
                     (Maybe (Util.CBOR.ReadIncrementalErr, Word64))
                  -> m (VolDB.ParsedInfo (HeaderHash blk),
-                    Maybe BlockFileParserError)
+                    Maybe (BlockFileParserError (HeaderHash blk)))
     checkEntries parsed stream = S.next stream >>= \case
       Left mbErr -> return (reverse parsed, BlockReadErr . fst <$> mbErr)
       Right ((offset, (size, blk)), stream') | noValidation || (validate blk) ->
         let !blockInfo = extractInfo' blk
             newParsed = (offset, (VolDB.BlockSize size, blockInfo))
         in checkEntries (newParsed : parsed) stream'
-      _ -> return (reverse parsed, Just BlockCorruptErr)
+      Right ((_, (_, blk)), _) ->
+            let !bid = VolDB.bbid $ extractInfo' blk
+            in return (reverse parsed, Just (BlockCorruptedErr bid))
 
 {-------------------------------------------------------------------------------
   Error handling

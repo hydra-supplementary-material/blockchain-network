@@ -148,3 +148,15 @@ data InternalBlockInfo blockId = InternalBlockInfo {
     , ibHeaderOffset :: !Word16
     , ibHeaderSize   :: !Word16
     } deriving (Show, Generic, NoUnexpectedThunks)
+
+{------------------------------------------------------------------------------
+  Tracing
+------------------------------------------------------------------------------}
+
+data TraceEvent e hash
+    = DBAlreadyClosed
+    | DBAlreadyOpen
+    | BlockAlreadyHere hash
+    | TruncateCurrentFile FsPath
+    | Truncate e FsPath SlotOffset
+  deriving (Eq, Generic, Show)

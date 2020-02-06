@@ -194,6 +194,7 @@ fromChainDbArgs ChainDbArgs{..} = (
         , volEncodeBlock      = cdbEncodeBlock
         , volAddHdrEnv        = cdbAddHdrEnv
         , volValidation       = cdbBlockValidation
+        , volTracer           = contramap TraceVolDBEvent cdbTracer
         , volIsEBB            = \blk -> case cdbIsEBB (getHeader blk) of
                                           Nothing -> IsNotEBB
                                           Just _  -> IsEBB

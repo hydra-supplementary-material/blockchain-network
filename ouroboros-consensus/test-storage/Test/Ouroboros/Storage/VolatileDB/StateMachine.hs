@@ -25,6 +25,7 @@ import           Prelude hiding (elem)
 import           Codec.Serialise (decode)
 import           Control.Monad.Except
 import           Control.Monad.State
+import           Control.Tracer (nullTracer)
 import           Data.Bifunctor (bimap)
 import           Data.ByteString.Lazy (ByteString)
 import           Data.Functor.Classes
@@ -648,7 +649,7 @@ prop_sequential =
                     testBlockToBinaryInfo (const <$> decode) checkBlockIntegrity
                     ValidateAll
               (db, env) <- run $
-                    Internal.openDBFull hasFS EH.monadCatch ec parser 3
+                Internal.openDBFull hasFS EH.monadCatch ec parser nullTracer 3
               let sm' = sm True errorsVar db env dbm
               (hist, _model, res) <- runCommands sm' cmds
               run $ closeDB db
