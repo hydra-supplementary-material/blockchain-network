@@ -30,7 +30,7 @@ module Ouroboros.Storage.ChainDB.Impl.VolDB (
   , computePath
   , computePathSTM
     -- * Getting and parsing blocks
-  , BlockFileParserError (..)
+  , BlockFileParserError
   , getKnownBlock
   , getKnownHeader
   , getKnownBlockComponent
@@ -134,7 +134,7 @@ instance NoUnexpectedThunks (VolDB m blk) where
 
 -- | Short-hand for events traced by the VolDB wrapper.
 type TraceEvent blk =
-  VolDB.TraceEvent (BlockFileParserError (HeaderHash blk)) (HeaderHash blk)
+  VolDB.TraceEvent Util.CBOR.ReadIncrementalErr (HeaderHash blk)
 
 {-------------------------------------------------------------------------------
   Initialization
@@ -496,15 +496,13 @@ getBlockComponent db blockComponent hash = withDB db $ \vol ->
   Parsing
 -------------------------------------------------------------------------------}
 
-data BlockFileParserError hash =
-    BlockReadErr Util.CBOR.ReadIncrementalErr
-  | BlockCorruptedErr hash
-  deriving (Eq, Show)
+type BlockFileParserError hash =
+    VolDB.ParserError hash Util.CBOR.ReadIncrementalErr
 
 blockFileParser :: forall m blk. (IOLike m, HasHeader blk)
                 => VolDbArgs m blk
                 -> VolDB.Parser
-                     (BlockFileParserError (HeaderHash blk))
+                     Util.CBOR.ReadIncrementalErr
                      m
                      (HeaderHash blk)
 blockFileParser VolDbArgs{..} =
@@ -521,7 +519,7 @@ blockFileParser' :: forall m blk h. (IOLike m, HasHeader blk)
                  -> (blk -> Bool)
                  -> VolDB.BlockValidationPolicy
                  -> VolDB.Parser
-                     (BlockFileParserError (HeaderHash blk))
+                     Util.CBOR.ReadIncrementalErr
                      m
                      (HeaderHash blk)
 blockFileParser' hasFS isEBB encodeBlock decodeBlock validate validPolicy =
@@ -545,14 +543,14 @@ blockFileParser' hasFS isEBB encodeBlock decodeBlock validate validPolicy =
                  -> m (VolDB.ParsedInfo (HeaderHash blk),
                     Maybe (BlockFileParserError (HeaderHash blk)))
     checkEntries parsed stream = S.next stream >>= \case
-      Left mbErr -> return (reverse parsed, BlockReadErr . fst <$> mbErr)
+      Left mbErr -> return (reverse parsed, VolDB.BlockReadErr . fst <$> mbErr)
       Right ((offset, (size, blk)), stream') | noValidation || (validate blk) ->
         let !blockInfo = extractInfo' blk
             newParsed = (offset, (VolDB.BlockSize size, blockInfo))
         in checkEntries (newParsed : parsed) stream'
       Right ((_, (_, blk)), _) ->
-            let !bid = VolDB.bbid $ extractInfo' blk
-            in return (reverse parsed, Just (BlockCorruptedErr bid))
+        let !bid = VolDB.bbid $ extractInfo' blk
+        in return (reverse parsed, Just (VolDB.BlockCorruptedErr bid))
 
 {-------------------------------------------------------------------------------
   Error handling

@@ -14,7 +14,6 @@ module Ouroboros.Storage.VolatileDB.Types
 import           Control.Exception (Exception (..))
 import           Data.Map.Strict (Map)
 import           Data.Set (Set)
-import           Data.Typeable
 import           Data.Word (Word16, Word64)
 import           GHC.Generics (Generic)
 
@@ -63,7 +62,6 @@ data UserError =
 
 data UnexpectedError =
       FileSystemError FsError
-    | ParserError ParserError
     deriving (Show)
 
 instance Eq VolatileDBError where
@@ -72,15 +70,13 @@ instance Eq VolatileDBError where
 instance Exception VolatileDBError where
     displayException = show
 
-data ParserError =
-      forall blockId. (Typeable blockId, Eq blockId, Show blockId) =>
-      DuplicatedSlot blockId FsPath FsPath
-    | InvalidFilename FsPath
-
-deriving instance Show ParserError
-
-instance Eq ParserError where
-    (==) = sameParseError
+-- | This needs not be an 'Exception' instance, since we recover and don't
+-- throw such errors.
+data ParserError blockId e =
+    BlockReadErr e
+  | BlockCorruptedErr blockId
+  | DuplicatedSlot blockId FsPath FsPath
+  deriving (Eq, Show)
 
 sameVolatileDBError :: VolatileDBError
                     -> VolatileDBError
@@ -95,18 +91,6 @@ sameUnexpectedError :: UnexpectedError
                     -> Bool
 sameUnexpectedError e1 e2 = case (e1, e2) of
     (FileSystemError fs1, FileSystemError fs2) -> sameFsError fs1 fs2
-    (ParserError p1, ParserError p2)           -> p1 == p2
-    _                                          -> False
-
--- | This is not comparing the arguments of 'DuplicatedSlot', because it's not
--- deterministic which duplication we find. In other words, it's possible that
--- there are multiple pairs of duplicate blocks and our algorithm does not
--- guarantee we always find the same.
-sameParseError :: ParserError -> ParserError -> Bool
-sameParseError e1 e2 = case (e1, e2) of
-    (DuplicatedSlot {}, DuplicatedSlot {})       -> True
-    (InvalidFilename str1, InvalidFilename str2) -> str1 == str2
-    _                                            -> False
 
 newtype FileSize  = FileSize {unFileSize :: Word64}
     deriving (Show, Generic, NoUnexpectedThunks)
@@ -115,17 +99,19 @@ newtype BlockSize = BlockSize {unBlockSize :: Word64}
 
 newtype Parser e m blockId = Parser {
     -- | Parse block storage at the given path.
-    parse :: FsPath -> m (ParsedInfo blockId, Maybe e)
+    parse :: FsPath -> m (ParsedInfo blockId, Maybe (ParserError blockId e))
     }
 
 -- | The offset of a slot in a file.
 type SlotOffset = Word64
 
 -- | Information returned by the parser about a single file.
+type ParsedInfo blockId = [ParsedBlockInfo blockId]
+
+-- | Information returned by the parser about a single block.
 --
--- The parser returns for each block, its size its blockId, its slot and its
--- predecessor's blockId.
-type ParsedInfo blockId = [(SlotOffset, (BlockSize, BlockInfo blockId))]
+-- The parser returns for each block, its offset, its size and its 'BlockInfo'
+type ParsedBlockInfo blockId = (SlotOffset, (BlockSize, BlockInfo blockId))
 
 -- | The information that the user has to provide for each new block.
 data BlockInfo blockId = BlockInfo {
@@ -153,10 +139,11 @@ data InternalBlockInfo blockId = InternalBlockInfo {
   Tracing
 ------------------------------------------------------------------------------}
 
-data TraceEvent e hash
+data TraceEvent e blockId
     = DBAlreadyClosed
     | DBAlreadyOpen
-    | BlockAlreadyHere hash
+    | BlockAlreadyHere blockId
     | TruncateCurrentFile FsPath
-    | Truncate e FsPath SlotOffset
+    | Truncate (ParserError blockId e) FsPath SlotOffset
+    | InvalidFileNames [FsPath]
   deriving (Eq, Generic, Show)

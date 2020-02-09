@@ -29,7 +29,10 @@ module Ouroboros.Storage.VolatileDB.Util
     ) where
 
 import           Control.Monad
+import           Data.Bifunctor (first)
+import           Data.List (sortOn)
 import qualified Data.Map.Strict as Map
+import           Data.Maybe (fromMaybe)
 import           Data.Set (Set)
 import qualified Data.Set as Set
 import           Data.Text (Text)
@@ -50,12 +53,10 @@ import           Ouroboros.Storage.VolatileDB.Types
   FileId utilities
 ------------------------------------------------------------------------------}
 
-parseFd :: FsPath -> Either VolatileDBError FileId
-parseFd file = maybe err Right $
+parseFd :: FsPath -> Maybe FileId
+parseFd file =
     parseFilename <=< lastMaybe $ fsPathToList file
   where
-    err = Left $ UnexpectedError $ ParserError $ InvalidFilename file
-
     parseFilename :: Text -> Maybe FileId
     parseFilename = readMaybe
                   . T.unpack
@@ -64,22 +65,27 @@ parseFd file = maybe err Right $
                   . fst
                   . T.breakOn "."
 
--- | Parses the 'FileId' of each 'FsPath' and zips them together.
--- When parsing fails, we abort with the corresponding parse error.
-parseAllFds :: [FsPath] -> Either VolatileDBError [(FileId, FsPath)]
-parseAllFds = mapM $ \f -> (,f) <$> parseFd f
+-- | Parses the 'FileId' of each 'FsPath' and zips them together. Returns
+-- the results sorted on the 'FileId'.
+--
+-- Return separately any 'FsPath' which failed to parse.
+parseAllFds :: [FsPath] -> ([(FileId, FsPath)], [FsPath])
+parseAllFds = first (sortOn fst) . foldr judge ([], [])
+  where
+    judge fsPath (parsed, notParsed) = case parseFd fsPath of
+      Nothing     -> (parsed, fsPath : notParsed)
+      Just fileId -> ((fileId, fsPath) : parsed, notParsed)
 
--- | When parsing fails, we abort with the corresponding parse error.
-findLastFd :: [FsPath] -> Either VolatileDBError (Maybe FileId)
-findLastFd = fmap safeMaximum . mapM parseFd
+-- | This also returns any 'FsPath' which failed to parse.
+findLastFd :: [FsPath] -> (Maybe FileId, [FsPath])
+findLastFd = first (fmap fst . lastMaybe) . parseAllFds
 
 filePath :: FileId -> FsPath
 filePath fd = mkFsPath ["blocks-" ++ show fd ++ ".dat"]
 
 unsafeParseFd :: FsPath -> FileId
-unsafeParseFd file = either
-    (\_ -> error $ "Could not parse filename " <> show file)
-    id
+unsafeParseFd file = fromMaybe
+    (error $ "Could not parse filename " <> show file)
     (parseFd file)
 
 {------------------------------------------------------------------------------

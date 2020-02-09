@@ -84,6 +84,13 @@
 --  There is an implicit ordering of block files, which is NOT alpharithmetic
 --  For example blocks-20.dat < blocks-100.dat
 --
+-- = Recovery
+--
+-- The VolatileDB will always try to recover to a consistent state even if this
+-- means deleting all of its contents. In order to achieve this, it truncates
+-- files of blocks, if some blocks fail to parse, are invalid, or are
+-- duplicated. The db also ignores any filenames which fail to parse.
+--
 module Ouroboros.Storage.VolatileDB.Impl
     ( -- * Opening a database
       openDB
@@ -100,7 +107,6 @@ import           Control.Monad
 import           Control.Tracer (Tracer, traceWith)
 import qualified Data.ByteString.Builder as BS
 import           Data.List (find, sortOn)
-import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import           Data.Maybe
 import           Data.Set (Set)
@@ -539,7 +545,8 @@ reOpenFile HasFS{..} _err VolatileDBEnv{..} st@InternalState{..} = do
       , _currentWriteOffset = 0
       }
 
-mkInternalStateDB :: ( HasCallStack
+mkInternalStateDB :: forall m blockId e h.
+                     ( HasCallStack
                      , MonadThrow m
                      , MonadCatch m
                      , Ord      blockId
@@ -556,9 +563,16 @@ mkInternalStateDB hasFS@HasFS{..} err parser tracer maxBlocksPerFile =
     wrapFsError hasFsErr err $ do
       createDirectoryIfMissing True dbDir
       allFiles <- map toFsPath . Set.toList <$> listDirectory dbDir
-      filesWithIds <- fromEither err $ parseAllFds allFiles
+      filesWithIds <- logInvalidFiles $ parseAllFds allFiles
       mkInternalState hasFS err parser tracer maxBlocksPerFile filesWithIds
   where
+    -- | Logs about any invalid 'FsPath' and returns the valid ones.
+    logInvalidFiles :: ([(FileId, FsPath)], [FsPath]) -> m [(FileId, FsPath)]
+    logInvalidFiles (valid, invalid) = do
+      when (not $ null invalid) $
+        traceWith tracer $ InvalidFileNames invalid
+      return valid
+
     dbDir = mkFsPath []
 
     toFsPath :: String -> FsPath
@@ -594,8 +608,11 @@ mkInternalState hasFS err parser tracer n files =
       , Index.insert newIndex FileInfo.empty curMap
       , FileSize 0 )
 
-    truncateOnError Nothing _ _ = return ()
-    truncateOnError (Just e) file offset = do
+    truncateOnError :: Maybe (SlotOffset, ParserError blockId e)
+                    -> FsPath
+                    -> m ()
+    truncateOnError Nothing _ = return ()
+    truncateOnError (Just (offset, e)) file = do
       traceWith tracer $ Truncate e file offset
       -- The handle of the parser is closed at this point. We need
       -- to reopen the file in 'AppendMode' now (parser opens with
@@ -653,23 +670,25 @@ mkInternalState hasFS err parser tracer n files =
         (blocks, mErr) <- parse parser file
         updateAndGo blocks mErr
       where
-        -- | Updates the state and call 'go' for the rest of the files.
-        updateAndGo :: [(SlotOffset, (BlockSize, BlockInfo blockId))]
-                    -> Maybe e
+        -- | Updates the state, truncates if there are any parsing errors and
+        -- calls 'go' for the rest of the files.
+        updateAndGo :: ParsedInfo blockId
+                    -> Maybe (ParserError blockId e)
                     -> m (InternalState blockId h)
         updateAndGo blocks mErr = do
-            truncateOnError mErr file offset
-            newRevMap <- fromEither err $ reverseMap file currentRevMap fileMap
+            truncateOnError (fmap (offset,) mErr) file
+            truncateOnError mErr' file
             go newMap newRevMap newSuccMap newMaxSlot newHaveLessThanN rest
           where
-            offset = case reverse blocks of
+            (newRevMap, acceptedBlocks, mErr') =
+              reverseMap file currentRevMap blocks
+            offset = case reverse acceptedBlocks of
               [] -> 0
               (slotOffset, (blockSize,_)) : _ ->
                 -- The file offset is given by the offset of the last
                 -- block plus its size.
                 slotOffset + unBlockSize blockSize
-            fileMap = Map.fromList blocks
-            (fileInfo, maxSlotOfFile) = FileInfo.fromParsedInfo blocks
+            (fileInfo, maxSlotOfFile) = FileInfo.fromParsedInfo acceptedBlocks
             newMap = Index.insert fd fileInfo currentMap
             newMaxSlot = maxSlotList $ catMaybes [maxSlot, maxSlotOfFile]
             -- For each block we need to update the succesor Map of its
@@ -678,7 +697,7 @@ mkInternalState hasFS err parser tracer n files =
               (\(_,(_, blockInfo)) succMap' ->
                 insertMapSet succMap' (bbid blockInfo, bpreBid blockInfo))
               succMap
-              blocks
+              acceptedBlocks
             newHaveLessThanN = if FileInfo.isFull n fileInfo
               then lessThanN
               else (fd, file, FileSize offset) : lessThanN
@@ -758,28 +777,40 @@ getterSTM fromSt VolatileDBEnv{..} = do
       VolatileDbClosed  -> EH.throwError' _dbErrSTM $ UserError ClosedDBError
       VolatileDbOpen st -> return $ fromSt st
 
--- | For each block found in a parsed file, we insert its 'InternalBlockInfo'.
--- If the block is already found in the 'ReverseIndex' or is duplicated in the
--- same file, we abort and return an error.
-reverseMap :: forall blockId. (
+-- | For each block found in a parsed file, we insert its 'InternalBlockInfo'
+-- to the 'ReverseIndex'.
+-- If a block is already found in the 'ReverseIndex' or is duplicated in the
+-- same file, we stop and return an error, the offset to truncate and ignore
+-- the rest blocks of the file.
+reverseMap :: forall blockId e. (
                 Ord      blockId
               , Typeable blockId
               , Show     blockId
               )
            => FsPath
            -> ReverseIndex blockId
-           -> Map SlotOffset (BlockSize, BlockInfo blockId)
-           -> Either VolatileDBError (ReverseIndex blockId)
-reverseMap file revMap mp = foldM go revMap (Map.toList mp)
+           -> ParsedInfo blockId
+           -> ( ReverseIndex blockId
+              , ParsedInfo blockId
+              , Maybe (SlotOffset, ParserError blockId e))
+reverseMap file revMap = go revMap []
   where
     go :: ReverseIndex blockId
-       -> (SlotOffset, (BlockSize, BlockInfo blockId))
-       -> Either VolatileDBError (ReverseIndex blockId)
-    go rv (offset, (size, BlockInfo {..})) = case Map.lookup bbid rv of
-        Nothing -> Right $ Map.insert bbid internalBlockInfo rv
-        Just blockInfo -> Left $ UnexpectedError . ParserError
-          $ DuplicatedSlot bbid file (ibFile blockInfo)
+       -> ParsedInfo blockId -- accumulator of the accepted blocks.
+       -> ParsedInfo blockId
+       -> ( ReverseIndex blockId
+          , ParsedInfo blockId
+          , Maybe (SlotOffset, ParserError blockId e))
+    go rv acc [] = (rv, reverse acc, Nothing)
+    go rv acc (parsedBlock : rest) = case Map.lookup bbid rv of
+        Nothing        ->
+          go (Map.insert bbid internalBlockInfo rv) (parsedBlock : acc) rest
+        Just blockInfo ->
+          ( rv
+          , reverse acc
+          , Just (offset, DuplicatedSlot bbid file (ibFile blockInfo)) )
       where
+        (offset, (size, BlockInfo {..})) = parsedBlock
         internalBlockInfo = InternalBlockInfo {
             ibFile         = file
           , ibSlotOffset   = offset
