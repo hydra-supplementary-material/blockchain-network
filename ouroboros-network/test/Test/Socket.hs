@@ -242,7 +242,11 @@ prop_socket_send_recv initiatorAddr responderAddr f xs = do
         responderAddr
         cborTermVersionDataCodec
         (\(DictVersion _) -> acceptEq)
-        (simpleSingletonVersions NodeToNodeV_1 (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) responderApp)
+        (simpleSingletonVersions
+          NodeToNodeV_1
+          (NodeToNodeVersionData $ NetworkMagic 0)
+          (DictVersion nodeToNodeCodecCBORTerm)
+          (SomeResponderApplication responderApp))
         nullErrorPolicies
         $ \_ _ -> do
           connectToNode
@@ -403,7 +407,11 @@ demo chain0 updates = do
       producerAddress
       cborTermVersionDataCodec
       (\(DictVersion _) -> acceptEq)
-      (simpleSingletonVersions (0::Int) (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) responderApp)
+      (simpleSingletonVersions
+        (0::Int)
+        (NodeToNodeVersionData $ NetworkMagic 0)
+        (DictVersion nodeToNodeCodecCBORTerm)
+        (SomeResponderApplication responderApp))
       nullErrorPolicies
       $ \_ _ -> do
       withAsync

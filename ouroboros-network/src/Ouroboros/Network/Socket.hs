@@ -16,6 +16,7 @@ module Ouroboros.Network.Socket (
     , ConnectionTableRef (..)
     , ValencyCounter
     , NetworkMutableState (..)
+    , SomeResponderApplication (..)
     , newNetworkMutableState
     , newNetworkMutableStateSTM
     , cleanNetworkMutableState
@@ -241,6 +242,15 @@ connectToNode' versionDataCodec NetworkConnectTracers {nctMuxTracer, nctHandshak
              traceWith muxTracer $ Mx.MuxTraceHandshakeClientEnd (diffTime ts_end ts_start)
              Mx.muxStart muxTracer (toApplication app connectionId) bearer
 
+-- |
+-- Wrapper for OuroborosResponderApplication and OuroborosInitiatorAndResponderApplication.
+--
+data SomeResponderApplication peerid ptcl m bytes b where
+     SomeResponderApplication
+       :: forall appType peerid ptcl m bytes a b.
+          Mx.HasResponder appType ~ True
+       => (OuroborosApplication appType peerid ptcl m bytes a b)
+       -> SomeResponderApplication peerid ptcl m bytes b
 
 -- |
 -- Accept or reject an incoming connection.  Each record contains the new state
@@ -256,11 +266,10 @@ connectToNode' versionDataCodec NetworkConnectTracers {nctMuxTracer, nctHandshak
 data AcceptConnection st vNumber extra peerid ptcl m bytes where
 
     AcceptConnection
-      :: forall appType st vNumber extra peerid ptcl m bytes a b.
-         Mx.HasResponder appType ~ True
-      => !st
+      :: forall st vNumber extra peerid ptcl m bytes b.
+         !st
       -> !peerid
-      -> Versions vNumber extra (OuroborosApplication appType peerid ptcl m bytes a b)
+      -> Versions vNumber extra (SomeResponderApplication peerid ptcl m bytes b)
       -> AcceptConnection st vNumber extra peerid ptcl m bytes
 
     RejectConnection
@@ -313,7 +322,7 @@ beginConnection muxTracer handshakeTracer versionDataCodec acceptVersion fn t ad
           Left err -> do
             traceWith muxTracer' $ Mx.MuxTraceHandshakeServerError err
             throwIO err
-          Right app -> do
+          Right (SomeResponderApplication app) -> do
             traceWith muxTracer' $ Mx.MuxTraceHandshakeServerEnd
             Mx.muxStart muxTracer' (toApplication app peerid) bearer
       RejectConnection st' _peerid -> pure $ Server.Reject st'
@@ -420,9 +429,8 @@ cleanNetworkMutableState NetworkMutableState {nmsPeerStates} =
 -- Thin wrapper around @'Server.run'@.
 --
 runServerThread
-    :: forall appType ptcl vNumber extra a b.
-       ( Mx.HasResponder appType ~ True
-       , ProtocolEnum ptcl
+    :: forall ptcl vNumber extra b.
+       ( ProtocolEnum ptcl
        , Ord ptcl
        , Enum ptcl
        , Bounded ptcl
@@ -439,7 +447,7 @@ runServerThread
     -> Socket.Socket
     -> VersionDataCodec extra CBOR.Term
     -> (forall vData. extra vData -> vData -> vData -> Accept)
-    -> Versions vNumber extra (OuroborosApplication appType ConnectionId ptcl IO BL.ByteString a b)
+    -> Versions vNumber extra (SomeResponderApplication ConnectionId ptcl IO BL.ByteString b)
     -> ErrorPolicies Socket.SockAddr ()
     -> IO Void
 runServerThread NetworkServerTracers { nstMuxTracer
@@ -514,9 +522,8 @@ runServerThread NetworkServerTracers { nstMuxTracer
 -- thread which runs the server.  This makes it useful for testing, where we
 -- need to guarantee that a socket is open before we try to connect to it.
 withServerNode
-    :: forall appType ptcl vNumber extra t a b.
-       ( Mx.HasResponder appType ~ True
-       , ProtocolEnum ptcl
+    :: forall ptcl vNumber extra t b.
+       ( ProtocolEnum ptcl
        , Ord ptcl
        , Enum ptcl
        , Bounded ptcl
@@ -533,7 +540,7 @@ withServerNode
     -> Socket.AddrInfo
     -> VersionDataCodec extra CBOR.Term
     -> (forall vData. extra vData -> vData -> vData -> Accept)
-    -> Versions vNumber extra (OuroborosApplication appType ConnectionId ptcl IO BL.ByteString a b)
+    -> Versions vNumber extra (SomeResponderApplication ConnectionId ptcl IO BL.ByteString b)
     -- ^ The mux application that will be run on each incoming connection from
     -- a given address.  Note that if @'MuxClientAndServerApplication'@ is
     -- returned, the connection will run a full duplex set of mini-protocols.
