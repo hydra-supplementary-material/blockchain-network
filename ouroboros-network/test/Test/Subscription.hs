@@ -48,8 +48,8 @@ import qualified Network.TypedProtocol.ReqResp.Server as ReqResp
 import qualified Network.TypedProtocol.ReqResp.Codec.CBOR as ReqResp
 import qualified Network.TypedProtocol.ReqResp.Examples   as ReqResp
 
-import           Ouroboros.Network.Protocol.Handshake.Type (acceptEq, cborTermVersionDataCodec)
-import           Ouroboros.Network.Protocol.Handshake.Version (simpleSingletonVersions)
+import           Ouroboros.Network.Protocol.Handshake.Type (cborTermVersionDataCodec)
+import           Ouroboros.Network.Protocol.Handshake.Version (acceptV, simpleSingletonVersions)
 
 
 import           Ouroboros.Network.Magic
@@ -552,7 +552,7 @@ prop_send_recv f xs first = ioProperty $ do
         (NetworkMutableState tbl peerStatesVar)
         responderAddr
         cborTermVersionDataCodec
-        (\(DictVersion _) -> acceptEq)
+        (\(DictVersion _) -> acceptV)
         (simpleSingletonVersions
           NodeToNodeV_1
           (NodeToNodeVersionData $ NetworkMagic 0)
@@ -684,7 +684,7 @@ prop_send_recv_init_and_rsp f xs = ioProperty $ do
         (NetworkMutableState tbl stVar)
         responderAddr
         cborTermVersionDataCodec
-        (\(DictVersion _) -> acceptEq)
+        (\(DictVersion _) -> acceptV)
         (simpleSingletonVersions
           NodeToNodeV_1
           (NodeToNodeVersionData $ NetworkMagic 0)
@@ -703,7 +703,7 @@ prop_send_recv_init_and_rsp f xs = ioProperty $ do
         (NetworkMutableState tbl stVar)
         responderAddr
         cborTermVersionDataCodec
-        (\(DictVersion _) -> acceptEq)
+        (\(DictVersion _) -> acceptV)
         ((simpleSingletonVersions
           NodeToNodeV_1
           (NodeToNodeVersionData $ NetworkMagic 0)
@@ -816,7 +816,7 @@ _demo = ioProperty $ do
             (NetworkMutableState tbl stVar)
             addr
             cborTermVersionDataCodec
-            (\(DictVersion _) -> acceptEq)
+            (\(DictVersion _) -> acceptV)
             (simpleSingletonVersions
                 NodeToNodeV_1
                 (NodeToNodeVersionData $ NetworkMagic 0)

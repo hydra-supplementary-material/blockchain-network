@@ -186,7 +186,7 @@ serverPingPong = do
       networkState
       defaultLocalSocketAddrInfo
       cborTermVersionDataCodec
-      (\(DictVersion _) -> acceptEq)
+      (\(DictVersion _) -> acceptV)
       (simpleSingletonVersions
         (0::Int)
         (NodeToNodeVersionData $ NetworkMagic 0)
@@ -292,7 +292,7 @@ serverPingPong2 = do
       networkState
       defaultLocalSocketAddrInfo
       cborTermVersionDataCodec
-      (\(DictVersion _) -> acceptEq)
+      (\(DictVersion _) -> acceptV)
       (simpleSingletonVersions
         (0::Int)
         (NodeToNodeVersionData $ NetworkMagic 0)
@@ -372,7 +372,7 @@ serverChainSync sockAddr = do
       networkState
       (mkLocalSocketAddrInfo sockAddr)
       cborTermVersionDataCodec
-      (\(DictVersion _) -> acceptEq)
+      (\(DictVersion _) -> acceptV)
       (simpleSingletonVersions
         (0::Int)
         (NodeToNodeVersionData $ NetworkMagic 0)
@@ -578,7 +578,7 @@ serverBlockFetch sockAddr = do
       networkState
       (mkLocalSocketAddrInfo sockAddr)
       cborTermVersionDataCodec
-      (\(DictVersion _) -> acceptEq)
+      (\(DictVersion _) -> acceptV)
       (simpleSingletonVersions
         (0::Int)
         (NodeToNodeVersionData $ NetworkMagic 0)

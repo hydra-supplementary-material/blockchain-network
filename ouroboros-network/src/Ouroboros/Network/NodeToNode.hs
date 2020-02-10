@@ -169,6 +169,11 @@ newtype NodeToNodeVersionData = NodeToNodeVersionData
   { networkMagic :: NetworkMagic }
   deriving (Eq, Show, Typeable)
 
+instance Acceptable NodeToNodeVersionData where
+    acceptV local remote | local == remote = Accept
+                         | otherwise =  Refuse $ T.pack $ "version data mismatch: " ++ show local
+                                          ++ " /= " ++ show remote
+
 nodeToNodeCodecCBORTerm :: CodecCBORTerm Text NodeToNodeVersionData
 nodeToNodeCodecCBORTerm = CodecCBORTerm {encodeTerm, decodeTerm}
     where
@@ -237,7 +242,7 @@ withServer tracers networkState addr versions errPolicies =
     networkState
     addr
     cborTermVersionDataCodec
-    (\(DictVersion _) -> acceptEq)
+    (\(DictVersion _) -> acceptV)
     (SomeResponderApplication <$> versions)
     errPolicies
     (\_ async -> Async.wait async)
