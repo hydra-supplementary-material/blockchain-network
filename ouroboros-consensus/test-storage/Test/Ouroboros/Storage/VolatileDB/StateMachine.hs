@@ -619,6 +619,7 @@ prop_sequential =
               let ec = EH.throwCantCatch EH.monadCatch
               let parser = blockFileParser' hasFS testBlockIsEBB
                     testBlockToBinaryInfo (const <$> decode) (const True)
+                    ValidateAll
               (db, env) <- run $
                     Internal.openDBFull hasFS EH.monadCatch ec parser 3
               let sm' = sm True errorsVar db env dbm

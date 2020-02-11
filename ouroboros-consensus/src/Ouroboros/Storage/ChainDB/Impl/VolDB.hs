@@ -46,6 +46,7 @@ module Ouroboros.Storage.ChainDB.Impl.VolDB (
   , garbageCollect
     -- * Re-exports
   , VolatileDBError
+  , VolDB.BlockValidationPolicy
     -- * Exported for testing purposes
   , mkVolDB
   , blockFileParser'
@@ -143,6 +144,7 @@ data VolDbArgs m blk = forall h. VolDbArgs {
     , volEncodeBlock    :: blk -> BinaryInfo Encoding
     , volIsEBB          :: blk -> IsEBB
     , volAddHdrEnv      :: IsEBB -> Lazy.ByteString -> Lazy.ByteString
+    , volValidation     :: VolDB.BlockValidationPolicy
     }
 
 -- | Default arguments when using the 'IO' monad
@@ -168,6 +170,7 @@ defaultArgs fp = VolDbArgs {
     , volEncodeBlock    = error "no default for volEncodeBlock"
     , volIsEBB          = error "no default for volIsEBB"
     , volAddHdrEnv      = error "no default for volAddHdrEnv"
+    , volValidation     = error "no default for volValidation"
     }
 
 openDB :: (IOLike m, HasHeader blk) => VolDbArgs m blk -> m (VolDB m blk)
@@ -494,7 +497,8 @@ blockFileParser :: forall m blk. (IOLike m, HasHeader blk)
                      m
                      (HeaderHash blk)
 blockFileParser VolDbArgs{..} =
-    blockFileParser' volHasFS volIsEBB volEncodeBlock volDecodeBlock volCheckIntegrity
+    blockFileParser' volHasFS volIsEBB volEncodeBlock volDecodeBlock
+      volCheckIntegrity volValidation
 
 -- | A version which is easier to use for tests, since it does not require
 -- the whole @VolDbArgs@.
@@ -504,13 +508,14 @@ blockFileParser' :: forall m blk h. (IOLike m, HasHeader blk)
                  -> (blk -> BinaryInfo Encoding)
                  -> (forall s. Decoder s (Lazy.ByteString -> blk))
                  -> (blk -> Bool)
+                 -> VolDB.BlockValidationPolicy
                  -> VolDB.Parser
                      BlockFileParserError
                      m
                      (HeaderHash blk)
-blockFileParser' hasFS isEBB encodeBlock decodeBlock checkIntegrity =
+blockFileParser' hasFS isEBB encodeBlock decodeBlock validate validPolicy =
     VolDB.Parser $ \fsPath -> Util.CBOR.withStreamIncrementalOffsets
-      hasFS decodeBlock fsPath checkEntries
+      hasFS decodeBlock fsPath (checkEntries [])
   where
     -- TODO: It looks weird that we use an encoding function 'encodeBlock'
     -- during parsing, but this is quite cheap, since the encoding is already
@@ -519,20 +524,22 @@ blockFileParser' hasFS isEBB encodeBlock decodeBlock checkIntegrity =
     extractInfo' :: blk -> VolDB.BlockInfo (HeaderHash blk)
     extractInfo' blk = extractInfo isEBB (encodeBlock blk) blk
 
-    checkEntries :: Stream (Of (Word64, (Word64, blk)))
+    noValidation :: Bool
+    noValidation = validPolicy == VolDB.NoValidation
+
+    checkEntries :: VolDB.ParsedInfo (HeaderHash blk)
+                 -> Stream (Of (Word64, (Word64, blk)))
                     m
                     (Maybe (Util.CBOR.ReadIncrementalErr, Word64))
                  -> m (VolDB.ParsedInfo (HeaderHash blk),
                     Maybe BlockFileParserError)
-    checkEntries = go []
-      where
-        go parsed stream = S.next stream >>= \case
-          Left mbErr -> return (reverse parsed, BlockReadErr . fst <$> mbErr)
-          Right ((offset, (size, blk)), stream') | checkIntegrity blk ->
-            let !blockInfo = extractInfo' blk
-                newParsed = (offset, (VolDB.BlockSize size, blockInfo))
-            in go (newParsed : parsed) stream'
-          _ -> return (reverse parsed, Just BlockCorruptErr)
+    checkEntries parsed stream = S.next stream >>= \case
+      Left mbErr -> return (reverse parsed, BlockReadErr . fst <$> mbErr)
+      Right ((offset, (size, blk)), stream') | noValidation || (validate blk) ->
+        let !blockInfo = extractInfo' blk
+            newParsed = (offset, (VolDB.BlockSize size, blockInfo))
+        in checkEntries (newParsed : parsed) stream'
+      _ -> return (reverse parsed, Just BlockCorruptErr)
 
 {-------------------------------------------------------------------------------
   Error handling

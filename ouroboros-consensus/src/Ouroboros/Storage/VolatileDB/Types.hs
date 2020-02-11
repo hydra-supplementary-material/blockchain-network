@@ -39,6 +39,13 @@ type ReverseIndex blockId = Map blockId (InternalBlockInfo blockId)
 -- a predecessor (set of successors).
 type SuccessorsIndex blockId = Map (WithOrigin blockId) (Set blockId)
 
+-- | When block validation is enabled, the parser checks for each block a number
+-- of properties and stops parsing if it finds any invalid blocks.
+data BlockValidationPolicy =
+      NoValidation
+    | ValidateAll
+    deriving Eq
+
 -- | Errors which might arise when working with this database.
 data VolatileDBError =
       UserError UserError

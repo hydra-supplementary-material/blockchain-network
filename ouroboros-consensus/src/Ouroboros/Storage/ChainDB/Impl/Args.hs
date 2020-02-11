@@ -84,6 +84,7 @@ data ChainDbArgs m blk = forall h1 h2 h3. ChainDbArgs {
 
       -- Policy
     , cdbValidation       :: ImmDB.ValidationPolicy
+    , cdbBlockValidation  :: VolDB.BlockValidationPolicy
     , cdbBlocksPerFile    :: Int
     , cdbParamsLgrDB      :: LgrDB.LedgerDbParams
     , cdbDiskPolicy       :: LgrDB.DiskPolicy
@@ -192,6 +193,7 @@ fromChainDbArgs ChainDbArgs{..} = (
         , volDecodeBlock      = cdbDecodeBlock
         , volEncodeBlock      = cdbEncodeBlock
         , volAddHdrEnv        = cdbAddHdrEnv
+        , volValidation       = cdbBlockValidation
         , volIsEBB            = \blk -> case cdbIsEBB (getHeader blk) of
                                           Nothing -> IsNotEBB
                                           Just _  -> IsEBB
@@ -259,6 +261,7 @@ toChainDbArgs ImmDB.ImmDbArgs{..}
     , cdbHasFSLgrDB       = lgrHasFS
       -- Policy
     , cdbValidation       = immValidation
+    , cdbBlockValidation  = volValidation
     , cdbBlocksPerFile    = volBlocksPerFile
     , cdbParamsLgrDB      = lgrParams
     , cdbDiskPolicy       = lgrDiskPolicy
