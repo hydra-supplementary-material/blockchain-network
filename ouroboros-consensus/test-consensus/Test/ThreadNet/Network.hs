@@ -535,7 +535,7 @@ runThreadNetwork ThreadNetworkArgs
           -- Policy
         , cdbValidation       = ImmDB.ValidateAllEpochs
         , cdbBlockValidation  = VolDB.ValidateAll
-        , cdbBlocksPerFile    = 4
+        , cdbBlocksPerFile    = VolDB.mkBlocksPerFile 4
         , cdbParamsLgrDB      = LgrDB.ledgerDbDefaultParams (protocolSecurityParam cfg)
         , cdbDiskPolicy       = LgrDB.defaultDiskPolicy (protocolSecurityParam cfg)
           -- Integration

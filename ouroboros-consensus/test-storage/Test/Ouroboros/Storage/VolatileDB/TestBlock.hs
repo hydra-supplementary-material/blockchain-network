@@ -1,5 +1,4 @@
 {-# LANGUAGE FlexibleContexts    #-}
-{-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections       #-}
@@ -17,7 +16,8 @@ module Test.Ouroboros.Storage.VolatileDB.TestBlock
   , generateCorruptions
   , corruptFile
   , createFile
-  , getOrigin
+  , toOrigin
+  , fromOrigin
   , mkBlockInfo
   )
 where
@@ -30,7 +30,8 @@ import qualified Data.List.NonEmpty as NE
 import           Data.Word (Word64)
 import           Test.QuickCheck
 
-import           Ouroboros.Network.Point (WithOrigin, at, origin)
+import           Ouroboros.Network.Block (ChainHash (..), HeaderHash)
+import           Ouroboros.Network.Point (WithOrigin (..))
 
 import           Ouroboros.Consensus.Util.IOLike
 
@@ -47,15 +48,19 @@ type BlockId = TestHeaderHash
 
 type Predecessor = WithOrigin BlockId
 
-getOrigin :: ChainHash b -> WithOrigin (HeaderHash b)
-getOrigin GenesisHash            = origin
-getOrigin (BlockHash headerHash) = at headerHash
+toOrigin :: ChainHash b -> WithOrigin (HeaderHash b)
+toOrigin GenesisHash            = Origin
+toOrigin (BlockHash headerHash) = At headerHash
+
+fromOrigin :: WithOrigin (HeaderHash b) -> ChainHash b
+fromOrigin Origin          = GenesisHash
+fromOrigin (At headerHash) = (BlockHash headerHash)
 
 mkBlockInfo :: TestBlock -> BlockInfo (BlockId)
 mkBlockInfo tb = BlockInfo {
       bbid          = thHash
     , bslot         = thSlotNo
-    , bpreBid       = getOrigin thPrevHash
+    , bpreBid       = toOrigin thPrevHash
     , bisEBB        = thIsEBB
     , bheaderOffset = testBlockHeaderOffset
     , bheaderSize   = testBlockHeaderSize tb

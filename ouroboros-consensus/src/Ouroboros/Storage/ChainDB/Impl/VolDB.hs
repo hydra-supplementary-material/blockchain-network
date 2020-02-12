@@ -48,7 +48,8 @@ module Ouroboros.Storage.ChainDB.Impl.VolDB (
   , TraceEvent
     -- * Re-exports
   , VolatileDBError
-  , VolDB.BlockValidationPolicy
+  , BlockValidationPolicy
+  , BlocksPerFile
     -- * Exported for testing purposes
   , mkVolDB
   , blockFileParser'
@@ -60,6 +61,7 @@ import qualified Codec.CBOR.Read as CBOR
 import qualified Codec.CBOR.Write as CBOR
 import           Control.Monad (join)
 import           Control.Tracer (Tracer, nullTracer)
+import           Data.Bifunctor (first)
 import qualified Data.ByteString.Lazy as Lazy
 import           Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NE
@@ -73,7 +75,7 @@ import           Streaming.Prelude (Of (..), Stream)
 import qualified Streaming.Prelude as S
 import           System.FilePath ((</>))
 
-import           Cardano.Prelude (allNoUnexpectedThunks, Word64)
+import           Cardano.Prelude (Word64, allNoUnexpectedThunks)
 
 import           Ouroboros.Network.Block (pattern BlockPoint, ChainHash (..),
                      pattern GenesisPoint, HasHeader (..), HeaderHash,
@@ -97,7 +99,8 @@ import           Ouroboros.Storage.FS.IO (ioHasFS)
 import           Ouroboros.Storage.Util.ErrorHandling (ErrorHandling,
                      ThrowCantCatch)
 import qualified Ouroboros.Storage.Util.ErrorHandling as EH
-import           Ouroboros.Storage.VolatileDB (VolatileDB, VolatileDBError)
+import           Ouroboros.Storage.VolatileDB (BlockValidationPolicy (..),
+                     BlocksPerFile, VolatileDB, VolatileDBError)
 import qualified Ouroboros.Storage.VolatileDB as VolDB
 
 
@@ -145,7 +148,7 @@ data VolDbArgs m blk = forall h. VolDbArgs {
     , volErr            :: ErrorHandling VolatileDBError m
     , volErrSTM         :: ThrowCantCatch VolatileDBError (STM m)
     , volCheckIntegrity :: blk -> Bool
-    , volBlocksPerFile  :: Int
+    , volBlocksPerFile  :: BlocksPerFile
     , volDecodeHeader   :: forall s. Decoder s (Lazy.ByteString -> Header blk)
     , volDecodeBlock    :: forall s. Decoder s (Lazy.ByteString -> blk)
     , volEncodeBlock    :: blk -> BinaryInfo Encoding
@@ -159,12 +162,14 @@ data VolDbArgs m blk = forall h. VolDbArgs {
 --
 -- The following fields must still be defined:
 --
+-- * 'volCheckIntegrity'
 -- * 'volBlocksPerFile'
 -- * 'volDecodeHeader'
 -- * 'volDecodeBlock'
 -- * 'volEncodeBlock'
 -- * 'volIsEBB'
 -- * 'volAddHdrEnv'
+-- * 'volValidation'
 defaultArgs :: FilePath -> VolDbArgs IO blk
 defaultArgs fp = VolDbArgs {
       volErr            = EH.exceptions
@@ -511,46 +516,48 @@ blockFileParser VolDbArgs{..} =
 
 -- | A version which is easier to use for tests, since it does not require
 -- the whole @VolDbArgs@.
-blockFileParser' :: forall m blk h. (IOLike m, HasHeader blk)
-                 => HasFS m h
-                 -> (blk -> IsEBB)
-                 -> (blk -> BinaryInfo Encoding)
-                 -> (forall s. Decoder s (Lazy.ByteString -> blk))
-                 -> (blk -> Bool)
-                 -> VolDB.BlockValidationPolicy
-                 -> VolDB.Parser
-                     Util.CBOR.ReadIncrementalErr
-                     m
-                     (HeaderHash blk)
-blockFileParser' hasFS isEBB encodeBlock decodeBlock validate validPolicy =
+blockFileParser'
+  :: forall m blk h. (IOLike m, HasHeader blk)
+  => HasFS m h
+  -> (blk -> IsEBB)
+  -> (blk -> BinaryInfo Encoding)
+  -> (forall s. Decoder s (Lazy.ByteString -> blk))
+  -> (blk -> Bool)
+  -> VolDB.BlockValidationPolicy
+  -> VolDB.Parser
+       Util.CBOR.ReadIncrementalErr
+       m
+       (HeaderHash blk)
+blockFileParser' hasFS isEBB encodeBlock decodeBlock isNotCorrupt validationPolicy =
     VolDB.Parser $ \fsPath -> Util.CBOR.withStreamIncrementalOffsets
       hasFS decodeBlock fsPath (checkEntries [])
   where
-    -- TODO: It looks weird that we use an encoding function 'encodeBlock'
-    -- during parsing, but this is quite cheap, since the encoding is already
-    -- cached. We should consider improving this, so that it does not create
-    -- confusion.
+    -- It looks weird that we use an encoding function 'encodeBlock' during
+    -- parsing, but this is quite cheap, since the encoding is already cached.
     extractInfo' :: blk -> VolDB.BlockInfo (HeaderHash blk)
     extractInfo' blk = extractInfo isEBB (encodeBlock blk) blk
 
     noValidation :: Bool
-    noValidation = validPolicy == VolDB.NoValidation
+    noValidation = validationPolicy == VolDB.NoValidation
 
     checkEntries :: VolDB.ParsedInfo (HeaderHash blk)
                  -> Stream (Of (Word64, (Word64, blk)))
                     m
                     (Maybe (Util.CBOR.ReadIncrementalErr, Word64))
-                 -> m (VolDB.ParsedInfo (HeaderHash blk),
-                    Maybe (BlockFileParserError (HeaderHash blk)))
+                 -> m ( VolDB.ParsedInfo (HeaderHash blk)
+                      , Maybe (BlockFileParserError (HeaderHash blk), VolDB.BlockOffset)
+                      )
     checkEntries parsed stream = S.next stream >>= \case
-      Left mbErr -> return (reverse parsed, VolDB.BlockReadErr . fst <$> mbErr)
-      Right ((offset, (size, blk)), stream') | noValidation || (validate blk) ->
-        let !blockInfo = extractInfo' blk
-            newParsed = (offset, (VolDB.BlockSize size, blockInfo))
-        in checkEntries (newParsed : parsed) stream'
-      Right ((_, (_, blk)), _) ->
-        let !bid = VolDB.bbid $ extractInfo' blk
-        in return (reverse parsed, Just (VolDB.BlockCorruptedErr bid))
+      Left mbErr
+        -> return (reverse parsed, first VolDB.BlockReadErr <$> mbErr)
+      Right ((offset, (size, blk)), stream')
+        | noValidation || isNotCorrupt blk
+        -> let !blockInfo = extractInfo' blk
+               newParsed = (offset, (VolDB.BlockSize size, blockInfo))
+           in checkEntries (newParsed : parsed) stream'
+        | otherwise  -- The block was invalid
+        -> let !bid = VolDB.bbid $ extractInfo' blk
+           in return (reverse parsed, Just (VolDB.BlockCorruptedErr bid, offset))
 
 {-------------------------------------------------------------------------------
   Error handling

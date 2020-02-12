@@ -51,6 +51,8 @@ import           Test.Tasty (TestTree, testGroup)
 import           Test.Tasty.QuickCheck (testProperty)
 import           Text.Show.Pretty (ppShow)
 
+import           Ouroboros.Network.Block (BlockNo (..), ChainHash (..),
+                     MaxSlotNo, SlotNo)
 import           Ouroboros.Network.Point (WithOrigin)
 import qualified Ouroboros.Network.Point as WithOrigin
 
@@ -424,8 +426,7 @@ generatorCmdImpl m@Model {..} = Just $ do
         (150, return $ GetBlockComponent blockId)
       , (100, return $ GetBlockIds)
       , (150, return $ PutBlock testBlock)
-      , (100, return $ GetSuccessors $ WithOrigin.At blockId :
-          (WithOrigin.At <$> possiblePredecessors))
+      , (100, return $ GetSuccessors $ WithOrigin.At blockId : possiblePredecessors)
       , (100, return $ GetPredecessor blockIds)
       , (100, return $ GetMaxSlotNo)
       , (50, return $ GarbageCollect slot)
@@ -459,17 +460,13 @@ generatorCmdImpl m@Model {..} = Just $ do
 -- Many fields of the TestBlock are never used, so we use fixed values.
 genBlock :: Gen TestBlock
 genBlock = do
-  pblockId <- predecessorGenerator
-  isEBB <- elements [IsNotEBB, IsEBB]
-  slot <- arbitrary
-  let testBody = TestBody 0 True
-      hashBody' = hashBody testBody
-      testPHeaderHash = BlockHash pblockId
-      testHeader' =
-        TestHeader undefined testPHeaderHash hashBody' slot (BlockNo 0) isEBB
-      testHeader = testHeader' {thHash = hashHeader testHeader'}
-      testBlock = TestBlock testHeader testBody
-  return testBlock
+    pblockId <- predecessorGenerator
+    isEBB    <- elements [IsNotEBB, IsEBB]
+    slot     <- arbitrary
+    -- We don't care about these
+    let body = TestBody 0 True
+        blockNo = 0
+    return $ mkBlock body (fromOrigin pblockId) slot blockNo isEBB
 
 generatorImpl :: Bool
               -> Model Symbolic
@@ -500,11 +497,11 @@ blockIdGenerator Model {..} = do
     bid <- TestHeaderHash <$> arbitrary
     elements $ bid : (fst <$> getBlockId dbModel)
 
-predecessorGenerator :: Gen BlockId
+predecessorGenerator :: Gen (WithOrigin BlockId)
 predecessorGenerator = elements possiblePredecessors
 
-possiblePredecessors :: [BlockId]
-possiblePredecessors = TestHeaderHash <$> [0,1,2]
+possiblePredecessors :: [WithOrigin BlockId]
+possiblePredecessors = WithOrigin.Origin : map (WithOrigin.At . TestHeaderHash) [0,1,2]
 
 shrinkerImpl :: Model Symbolic -> At CmdErr Symbolic -> [At CmdErr Symbolic]
 shrinkerImpl m (At (CmdErr cmd mbErr)) = fmap At $
@@ -629,7 +626,7 @@ prop_sequential =
                     testBlockToBinaryInfo (const <$> decode) checkBlockIntegrity
                     ValidateAll
               (db, env) <- run $
-                Internal.openDBFull hasFS EH.monadCatch ec parser nullTracer 3
+                Internal.openDBFull hasFS EH.monadCatch ec parser nullTracer (mkBlocksPerFile 3)
               let sm' = sm errorsVar db env dbm
               (hist, _model, res) <- runCommands sm' cmds
               run $ closeDB db
@@ -799,7 +796,7 @@ isMemberTrue' events = sum $ count <$> events
     count :: Event Symbolic -> Int
     count e = case eventMockResp e of
         Resp (Left _)              -> 0
-        Resp (Right (IsMember ls)) -> if length (filter id ls) > 0 then 1 else 0
+        Resp (Right (IsMember ls)) -> if null ls then 0 else 1
         Resp (Right _)             -> 0
 
 data Tag =

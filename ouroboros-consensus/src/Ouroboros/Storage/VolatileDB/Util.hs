@@ -1,9 +1,6 @@
-{-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections       #-}
-
 module Ouroboros.Storage.VolatileDB.Util
     ( -- * FileId utilities
       parseFd
@@ -20,12 +17,6 @@ module Ouroboros.Storage.VolatileDB.Util
       -- * Map of Set utilities
     , insertMapSet
     , deleteMapSet
-
-      -- * Comparing utilities
-    , maxSlotList
-    , cmpMaybe
-    , updateSlot
-    , updateSlotNoBlockId
     ) where
 
 import           Control.Monad
@@ -41,8 +32,7 @@ import           Text.Read (readMaybe)
 
 import           Ouroboros.Network.Point (WithOrigin)
 
-import           Ouroboros.Consensus.Util (lastMaybe, safeMaximum,
-                     safeMaximumOn)
+import           Ouroboros.Consensus.Util (lastMaybe)
 
 import           Ouroboros.Storage.FS.API.Types
 import           Ouroboros.Storage.Util.ErrorHandling (ErrorHandling (..))
@@ -164,26 +154,3 @@ deleteMapSet :: Ord blockId
              -> (blockId, WithOrigin blockId)
              -> SuccessorsIndex blockId
 deleteMapSet mapSet (bid, pbid) = Map.alter (alterfDelete bid) pbid mapSet
-
-{------------------------------------------------------------------------------
-  Comparing utilities
-------------------------------------------------------------------------------}
-
-maxSlotList :: [(blockId, SlotNo)] -> Maybe (blockId, SlotNo)
-maxSlotList = updateSlot Nothing
-
-cmpMaybe :: Ord a => Maybe a -> a -> Bool
-cmpMaybe Nothing _   = False
-cmpMaybe (Just a) a' = a >= a'
-
-updateSlot :: forall blockId. Maybe (blockId, SlotNo)
-           -> [(blockId, SlotNo)]
-           -> Maybe (blockId, SlotNo)
-updateSlot msl ls = safeMaximumOn snd $ case msl of
-    Nothing -> ls
-    Just sl -> sl : ls
-
-updateSlotNoBlockId :: MaxSlotNo -> [SlotNo] -> MaxSlotNo
-updateSlotNoBlockId msl ls = maxSlotNoFromMaybe $ safeMaximum $ case msl of
-    NoMaxSlotNo  -> ls
-    MaxSlotNo sl -> sl : ls

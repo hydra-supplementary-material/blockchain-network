@@ -259,7 +259,7 @@ mkChainDbArgs
   -> ChainDbArgs IO blk
 mkChainDbArgs tracer registry btime dbPath cfg initLedger
               epochInfo = (ChainDB.defaultArgs dbPath)
-    { ChainDB.cdbBlocksPerFile    = 1000
+    { ChainDB.cdbBlocksPerFile    = mkBlocksPerFile 1000
     , ChainDB.cdbDecodeBlock      = nodeDecodeBlock         cfg
     , ChainDB.cdbDecodeHeader     = nodeDecodeHeader        cfg
     , ChainDB.cdbDecodeChainState = nodeDecodeChainState    (Proxy @blk) cfg

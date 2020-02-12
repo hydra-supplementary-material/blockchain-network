@@ -45,12 +45,13 @@ import qualified Data.ByteString.Lazy as BL
 import           Data.List (find, sortOn, splitAt)
 import           Data.Map (Map)
 import qualified Data.Map as Map
-import           Data.Maybe (fromMaybe, mapMaybe)
+import           Data.Maybe (fromMaybe)
 import           Data.Set (Set)
 import qualified Data.Set as Set
 import           Data.Typeable
 import           Data.Word
 
+import           Ouroboros.Network.Block (MaxSlotNo (..), SlotNo)
 import           Ouroboros.Network.Point (WithOrigin)
 
 import           Ouroboros.Consensus.Block (IsEBB)
@@ -247,10 +248,10 @@ garbageCollectModel :: forall m blockId
                     => ThrowCantCatch VolatileDBError m
                     -> SlotNo
                     -> m ()
-garbageCollectModel err sl = do
+garbageCollectModel err gcSlot = do
     dbm@DBModel {..} <- get
     whenClosedUserError dbm err
-    modify $ \dbm' -> dbm' {latestGarbaged = max latestGarbaged (Just sl)}
+    modify $ \dbm' -> dbm' { latestGarbaged = max latestGarbaged (Just gcSlot) }
     collectFiles (getCurrentFile dbm) $ sortedFilesOfIndex dbm
   where
 
@@ -259,12 +260,13 @@ garbageCollectModel err sl = do
       where
         collectFile :: (FsPath, MaxSlotNo)
                     -> m ()
-        collectFile (path, msl) =
-          if cmpMaybe (maxSlotNoToMaybe msl) sl
-          then return ()
-          else if path == currentFile
-          then modifyIndex $ Map.insert path (NoMaxSlotNo,[])
-          else modifyIndex $ Map.delete path
+        collectFile (path, fileMaxSlotNo)
+          | fileMaxSlotNo >= MaxSlotNo gcSlot
+          = return ()
+          | path == currentFile
+          = modifyIndex $ Map.insert path (NoMaxSlotNo,[])
+          | otherwise
+          = modifyIndex $ Map.delete path
 
 getBlockIdsModel :: forall m blockId
                  . MonadState (DBModel blockId) m
@@ -348,9 +350,8 @@ runCorruptionModel corrs = do
             -- we prepend on list of blockIds, so last bytes
             -- are actually at the head of the list.
             (droppedBids, newBids) = splitAt 1 bids
-            newBidsWithSlots = (\(b,_) -> (b, unsafeGetSlot dbm b)) <$> newBids
-            newMmax = snd <$> maxSlotList newBidsWithSlots
-            index' = Map.insert file (maxSlotNoFromMaybe newMmax, newBids) index
+            newMaxSlotNo = foldMap (MaxSlotNo . unsafeGetSlot dbm . fst) newBids
+            index' = Map.insert file (newMaxSlotNo, newBids) index
             mp' = Map.withoutKeys mp (Set.fromList $ fst <$> droppedBids)
         AppendBytes _n ->
             -- Appending doesn't actually change anything, since additional
@@ -391,10 +392,7 @@ recover dbm@DBModel {..} =
     return dbm {
         index     = index'
         -- Recalculate it from the index to match the real implementation
-      , maxSlotNo = maxSlotNoFromMaybe
-                  $ safeMaximum
-                  $ mapMaybe (\(mbS, _) -> maxSlotNoToMaybe mbS)
-                  $ Map.elems index'
+      , maxSlotNo = foldMap fst index'
       }
   where
     lastFd = unsafeLastFd dbm

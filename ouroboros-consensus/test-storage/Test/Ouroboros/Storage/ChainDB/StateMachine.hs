@@ -1457,7 +1457,7 @@ mkArgs cfg initLedger tracer registry varCurSlot
       -- Policy
     , cdbValidation       = ValidateAllEpochs
     , cdbBlockValidation  = VolDB.ValidateAll
-    , cdbBlocksPerFile    = 4
+    , cdbBlocksPerFile    = VolDB.mkBlocksPerFile 4
     , cdbParamsLgrDB      = LedgerDbParams {
                                 -- Pick a small value for 'ledgerDbSnapEvery',
                                 -- so that maximum supported rollback is limited
